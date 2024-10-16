@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Monitor</title>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <link
+      href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css"
+      rel="stylesheet"
+    />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <script>
+      async function runDockerCommand() {
+        const response = await fetch('http://localhost:7000/run-docker', { method: 'POST' });
+        const result = await response.text();
+        document.getElementById('output').textContent = result;
+      }
+    </script>
+    
+  </head>
+  <body>
+    <div id="app" class="table-container p-5">
+      <h1 class="text-5xl text-center font-bold p-6">Monitor</h1>
+
+      <div class="grid grid-cols-2 md:grid-cols-6 gap-4 pt-4">
+        <div
+          v-for="server in servers"
+          :key="server.instance"
+          class="server-table border p-4 shadow-md rounded"
+        >
+          <h2 class="text-xl font-semibold mb-2">{{ server.instance }}</h2>
+          <p class="pb-2 text-lg">
+            Estado actual: {{ server.history[server.history.length - 1].status
+            }}
+          </p>
+          <table class="w-full border-collapse">
+            <thead>
+              <tr class="bg-gray-200">
+                <th class="border py-1">Historial</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="(log, index) in server.history"
+                :key="index"
+                class="odd:bg-gray-100 even:bg-white"
+              >
+                <td class="border py-2">
+                  <span class="text-gray-600 text-base"
+                    >{{ log.timestamp }}: {{log.status}}</span
+                  >
+
+                  <span
+                    :class="log.status === 'up' ? 'bg-green-500' : 'bg-red-500'"
+                    class="inline-block w-4 h-4 rounded-full mx-1"
+                  ></span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="mt-6">
+        <canvas id="statusChart" width="240" height="80"></canvas>
+      </div>
+
+      <div class="button-container mt-4 flex justify-center">
+        <button
+          @click="loadLogs()"
+          class="bg-blue-500 hover:bg-blue-600 text-white font-semibold py-3 px-6 text-xl rounded"
+        >
+          Actualizar
+        </button>
+      </div>
+    </div>
+
+    <h1>Run Docker Command</h1>
+    <button onclick="runDockerCommand()">Run</button>
+    <pre id="output"></pre>
+
+    <script src="monitor.js"></script>
+  </body>
+</html>
