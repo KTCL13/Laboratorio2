@@ -11,7 +11,7 @@ const app = express();
 const server = http.createServer(app);  // Crear el servidor HTTP
 const io = new Server(server, {
     cors: {
-        origin: process.env.FRONTEND_URL || "http://localhost:8080/",  // IP dinámica para el frontend
+        origin: "*",
         methods: ["GET", "POST"],
     },
 });
@@ -20,7 +20,7 @@ app.use(cors());
 app.use(express.json());
 
 const port = process.env.PORT; 
-const MAX_HISTORY = 10;
+const MAX_HISTORY = 20;
 let connections = [];
 
 // Rutas para los logs y los monitores
@@ -50,9 +50,7 @@ app.post("/monitor", (req, res) => {
 
     connections.push({
         instance: serverAddress,
-        requests: 0,
         history: [],
-        tried: false,
         status: 'up',
         id: idContainer,
         logs: []
@@ -66,7 +64,7 @@ app.post("/monitor", (req, res) => {
 setInterval(async () => {
     const timeout = (server) =>
         new Promise((_, reject) =>
-            setTimeout(() => reject(new Error(`La petición a ${server.instance} tardó más de 15 segundos`)), 15000)
+            setTimeout(() => reject(new Error(`La petición a ${server.instance} tardó más de 15 segundos`)), 7000)
         );
 
     const promises = connections.map(async (server) => {
@@ -88,6 +86,7 @@ setInterval(async () => {
                 console.log('Respuesta:', respuesta.data);
             } else {
                 handleServerFailure(server, respuesta);
+                
             }
         } catch (error) {
             handleServerFailure(server, error);
@@ -113,15 +112,17 @@ setInterval(async () => {
 
 function handleServerFailure(server, error) {
     const isTimeout = error.message.includes('tardó más de 15 segundos');
-    server.status = 'down';
+    if(server.status != 'down'){
+        server.status = 'down';
+        runContainer((err, result) => {
+            if (err) {
+                console.log(`Error: ${err.message}`);
+            }
+            console.log(`Container created: ${result}`);
+        });
+    }
     server.message = `${isTimeout ? 'Timeout' : error.message}`;
     console.log(`Fallo en ${server.instance}: ${isTimeout ? 'Timeout' : error.message}`);
-    runContainer((err, result) => {
-        if (err) {
-            console.log(`Error: ${err.message}`);
-        }
-        console.log(`Container created: ${result}`);
-    });
 }
 
 io.on("connection", (_) => {
@@ -138,23 +139,34 @@ const sshConfig = {
 let portsData = { hostPort: 3000, containerPort: 3000 };
 
 app.post('/run-docker', (req, res) => {
+    console.log("/run-docker: iniciando una nueva instancia")
     runContainer((err, result) => {
         if (err) {
             return res.status(500).send(`Error: ${err.message}`);
         }
-        return res.status(200).send(`Container created: ${result}`);
+        res.status(200).send(`Container created: ${result}`);
     });
+    console.log("/run-docker: end")
 });
 
 app.get('/stop-random-container', (req, res) => {
+    console.log("/stop-random-container: Iniciando caos");
+
+    if (connections.length === 0) {
+        return res.status(400).send("No containers available to stop.");
+    }
+
     const randomContainer = connections[Math.floor(Math.random() * connections.length)];
+
     stopContainerById(randomContainer.id, (err, result) => {
         if (err) {
             return res.status(500).send(`Error: ${err.message}`);
         }
         res.send(`Container with ID ${randomContainer.id} stopped successfully.`);
     });
+    console.log("/stop-random-container: finalizando caos");
 });
+
 
 function stopContainerById(containerId, callback) {
     const command = `docker stop ${containerId}`;
