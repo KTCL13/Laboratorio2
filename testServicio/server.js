@@ -2,7 +2,10 @@ const express = require('express');
 const multer = require('multer');
 const Jimp = require('jimp');
 const cors = require('cors'); // <-- Importa CORS
+const morgan = require('morgan');
+const moment = require('moment-timezone');
 const app = express();
+
 
 const containerPort = process.env.CONTAINER_PORT;
 const hostPort = process.env.HOST_PORT;
@@ -12,13 +15,31 @@ const containerName = process.env.CONTAINER_NAME;
 
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
-// Habilitar CORS para todas las rutas
+
+
 app.use(cors());
 
-// Servir archivos estáticos desde la carpeta 'output'
+let logsArray = []; 
+
+morgan.token('date', (req, res, tz) => {
+  return moment().tz("America/Bogota").format('DD/MMM/YYYY:HH:mm:ss ZZ');
+});
+
+const morganLogs = morgan('[:date[clf]] ":method :url HTTP/:http-version" :status :res[content-length] ":remote-addr ":user-agent"', {
+  stream: {
+    write: (log) => {
+      console.log(log)
+      logsArray.push(log); 
+    }
+  }
+});
+
+
+app.use(morganLogs);
+
 
 app.get("/healthCheck", (req, res) => {
-  res.status(200).end();
+  res.status(200).json(logsArray);
 });
 
 app.post('/upload', upload.single('image'), async (req, res) => {
@@ -74,3 +95,4 @@ const startServer = async () => {
 };
 
 app.listen(containerPort, startServer);
+

@@ -1,17 +1,17 @@
+require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const http = require("http");
 const cors = require("cors");
 const { Server } = require('socket.io');
 const { Client } = require('ssh2');
-const crypto = require('crypto');
 const { strictEqual } = require('assert');
 
 const app = express();
 const server = http.createServer(app);  // Crear el servidor HTTP
 const io = new Server(server, {
     cors: {
-        origin: "http://192.168.137.50:8080/",  // Asegurar que el frontend está permitido
+        origin: process.env.FRONTEND_URL || "http://localhost:8080/",  // IP dinámica para el frontend
         methods: ["GET", "POST"],
     },
 });
@@ -19,10 +19,9 @@ const io = new Server(server, {
 app.use(cors());
 app.use(express.json());
 
-const port = 7000;
+const port = process.env.PORT; 
 const MAX_HISTORY = 10;
 let connections = [];
-
 
 // Rutas para los logs y los monitores
 app.get("/status", (req, res) => {
@@ -36,12 +35,12 @@ app.post("/monitor", (req, res) => {
     const instance = req.body;
 
     if (!instance || !instance.ipAddress || !instance.port) {
-        console.log("Algo fallo en la ip y el port");
+        console.log("Algo falló en la ip y el port");
         return res.status(400).json({ error: "Se requiere ipAddress y port" });
     }
 
     const serverAddress = `${instance.ipAddress}:${instance.port}`;
-    const idContainer= instance.id
+    const idContainer = instance.id;
     console.log("Servidor recibido: " + serverAddress);
 
     const existingServer = connections.find(conn => conn.instance === serverAddress);
@@ -55,7 +54,8 @@ app.post("/monitor", (req, res) => {
         history: [],
         tried: false,
         status: 'up',
-        id: idContainer
+        id: idContainer,
+        logs: []
     });
 
     res.status(200).end();
@@ -80,45 +80,17 @@ setInterval(async () => {
 
             const responseTime = Date.now() - startTime;
             server.responseTime = responseTime;
+            server.logs = respuesta.data;
 
             if (respuesta.status === 200) {
                 server.status = 'up';
-                server.message = `Tardo ${responseTime}`;
+                server.message = `Tardó ${responseTime}`;
                 console.log('Respuesta:', respuesta.data);
             } else {
-                if(server.status == 'down'){
-                server.message = `Error: ${respuesta.data}`;
-                console.log('Llega pero falla:', respuesta.data);
-                }else{
-                    server.status = 'down';
-                    server.message = `Error: ${respuesta.data}`;
-                    console.log('Llega pero falla:', respuesta.data);    
-                    runContainer((err, result) => {
-                        if (err) {
-                            console.log(`Error: ${err.message}`);
-                        }
-                        console.log(`Container created: ${result}`);
-                    });
-                }
+                handleServerFailure(server, respuesta);
             }
         } catch (error) {
-            if(server.status == 'down'){
-                const isTimeout = error.message.includes('tardó más de 15 segundos');
-                server.message = `${isTimeout ? 'Timeout' : error.message}`;
-                console.log(`Fallo en ${server.instance}: ${isTimeout ? 'Timeout' : error.message}`);
-
-            }else{
-                const isTimeout = error.message.includes('tardó más de 15 segundos');
-                server.status = 'down';
-                server.message = `${isTimeout ? 'Timeout' : error.message}`;
-                console.log(`Fallo en ${server.instance}: ${isTimeout ? 'Timeout' : error.message}`);
-                runContainer((err, result) => {
-                    if (err) {
-                        console.log(`Error: ${err.message}`);
-                    }
-                    console.log(`Container created: ${result}`);
-                });
-            }
+            handleServerFailure(server, error);
         }
 
         server.history.push({
@@ -139,22 +111,33 @@ setInterval(async () => {
     console.log("Emitió");
 }, 15000);
 
+function handleServerFailure(server, error) {
+    const isTimeout = error.message.includes('tardó más de 15 segundos');
+    server.status = 'down';
+    server.message = `${isTimeout ? 'Timeout' : error.message}`;
+    console.log(`Fallo en ${server.instance}: ${isTimeout ? 'Timeout' : error.message}`);
+    runContainer((err, result) => {
+        if (err) {
+            console.log(`Error: ${err.message}`);
+        }
+        console.log(`Container created: ${result}`);
+    });
+}
+
 io.on("connection", (_) => {
     console.log("Un usuario se conectó");
 });
 
-
-
 const sshConfig = {
-    host: '192.168.137.50',  
+    host: process.env.SSH_HOST,  
     port: 22,           
-    username: 'cristiancelis',  
-    password: 'jcelis',   
-  };
+    username: process.env.SSH_USERNAME,  
+    password: process.env.SSH_PASSWORD,   
+};
 
 let portsData = { hostPort: 3000, containerPort: 3000 };
 
-  app.post('/run-docker', (req, res) => {
+app.post('/run-docker', (req, res) => {
     runContainer((err, result) => {
         if (err) {
             return res.status(500).send(`Error: ${err.message}`);
@@ -164,100 +147,66 @@ let portsData = { hostPort: 3000, containerPort: 3000 };
 });
 
 app.get('/stop-random-container', (req, res) => {
-  // Select a random container from the list
-  const randomContainer = connections[Math.floor(Math.random() * connections.length)];
-
-    // Stop the container by its ID over SSH
+    const randomContainer = connections[Math.floor(Math.random() * connections.length)];
     stopContainerById(randomContainer.id, (err, result) => {
-      if (err) {
-        return res.status(500).send(`Error: ${err.message}`);
-      }
-      res.send(`Container with ID ${randomContainer.id} stopped successfully.`);
+        if (err) {
+            return res.status(500).send(`Error: ${err.message}`);
+        }
+        res.send(`Container with ID ${randomContainer.id} stopped successfully.`);
     });
-  });
+});
 
 function stopContainerById(containerId, callback) {
-  const command = `docker stop ${containerId}`;
-  executeSSHCommand(command, (err, stdout) => {
-    if (err || !stdout) {
-      return callback(new Error('Failed to stop container'));
-    }
-    callback(null, stdout);
-  });
+    const command = `docker stop ${containerId}`;
+    executeSSHCommand(command, callback);
 }
 
-function runContainer(callback){
-  const directory = '/home/cristiancelis/Documents/distribuidos/Laboratorio2/testServicio';
-  portsData.hostPort += 1;
-  portsData.containerPort += 1;
-  const hostPort=portsData.hostPort;
-  const containerPort= portsData.containerPort;
-  const discoveryServer="192.168.137.203:9000"
-  const ipAddress="192.168.137.50"
-  const uniqueContainerName = `my-node-app-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
+function runContainer(callback) {
+    const directory = process.env.DOCKER_DIRECTORY;
+    portsData.hostPort += 1;
+    portsData.containerPort += 1;
+    const hostPort = portsData.hostPort;
+    const containerPort = portsData.containerPort;
+    const discoveryServer = process.env.DISCOVERY_SERVER;
+    const ipAddress = process.env.SSH_HOST;
+    const uniqueContainerName = `my-node-app-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
 
-  const command = `
-    cd ${directory} && \
-    docker build -t my-node-app . && \
-    docker run --rm --name ${uniqueContainerName} \
-    -e CONTAINER_NAME=${uniqueContainerName} \
-    -e HOST_PORT=${hostPort} \
-    -e CONTAINER_PORT=${containerPort} \
-    -e DIS_SERVERIP_PORT=${discoveryServer} \
-    -e IP_ADDRESS=${ipAddress} \
-    -p ${hostPort}:${containerPort} my-node-app
-  `;
+    const command = `
+        cd ${directory} && \
+        docker build -t my-node-app . && \
+        docker run --rm --name ${uniqueContainerName} \
+        -e CONTAINER_NAME=${uniqueContainerName} \
+        -e HOST_PORT=${hostPort} \
+        -e CONTAINER_PORT=${containerPort} \
+        -e DIS_SERVERIP_PORT=${discoveryServer} \
+        -e IP_ADDRESS=${ipAddress} \
+        -p ${hostPort}:${containerPort} my-node-app
+    `;
 
-  executeSSHCommand(command, (err, stdout) => {
-    if (err || !stdout) {
-      return callback(new Error('Failed to create docker container'));
-    }
-    callback(null, stdout);
-  });
+    executeSSHCommand(command, callback);
 }
 
 function executeSSHCommand(command, callback) {
-  const conn = new Client();
+    const conn = new Client();
 
-  conn.on('ready', () => {
-    conn.exec(command, (err, stream) => {
-      if (err) {
-        conn.end();
-        return callback(err);
-      }
+    conn.on('ready', () => {
+        conn.exec(command, (err, stream) => {
+            if (err) {
+                conn.end();
+                return callback(err);
+            }
 
-      let outputData = '';
-      let errorData = '';
-
-      // Capture standard output
-      stream.on('data', (chunk) => {
-        outputData += chunk;
-        console.log(`STDOUT: ${chunk}`); // Log standard output
-      });
-
-      // Capture error output
-      stream.stderr.on('data', (chunk) => {
-        errorData += chunk;
-        console.error(`STDERR: ${chunk}`); // Log error output
-      });
-
-      stream.on('close', (code, signal) => {
-        conn.end();
-        // If there's error output, pass it to the callback
-        if (errorData) {
-          console.error('Error Output:', errorData.trim());
-          return callback(new Error(errorData.trim()), outputData.trim());
-        } else {
-          console.log('Command executed successfully.');
-          callback(null, outputData.trim());
-        }
-      });
-    });
-  }).connect(sshConfig);
+            let outputData = '';
+            stream.on('data', (chunk) => { outputData += chunk; });
+            stream.stderr.on('data', (chunk) => { console.error(`STDERR: ${chunk}`); });
+            stream.on('close', () => {
+                conn.end();
+                callback(null, outputData.trim());
+            });
+        });
+    }).connect(sshConfig);
 }
 
-
-// Cambiar de app.listen a server.listen para que Socket.IO funcione
 server.listen(port, () => {
     console.log(`Monitor corriendo en el puerto: ${port}`);
 });

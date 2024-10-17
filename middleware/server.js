@@ -18,7 +18,7 @@ const logs = [];
 
 app.post("/middleware", (req, res) => {
   let instance = req.body
-  connections.push({instance:`${instance.ipAddress}:${instance.port}`, requests: 0 , logs: [], tried:false });
+  connections.push({instance:`${instance.ipAddress}:${instance.port}`, requests: 0, tried:false });
   res.status(200).end();
   console.log("Instancias actualizadas: ", connections);
 });
@@ -56,10 +56,6 @@ app.post("/request", upload.single('image'), async (req, res) => {
         responseType: "arraybuffer"
       });
       
-      leastConnectedServer.requests++;
-      leastConnectedServer.logs.push(`${new Date()} - ${req.originalUrl} - ${req.method}. ${JSON.stringify(response.data)}`);
-      
-      // Round Robin: move to next server for the next request
       currentServerIndex = (currentServerIndex + 1) % connections.length;
 
       res.set('Content-Type', response.headers['content-type']);
@@ -69,13 +65,6 @@ app.post("/request", upload.single('image'), async (req, res) => {
     } catch (error) {
       console.log(`Error. ${leastConnectedServer.instance}: ${error.message}. ${new Date()}`);
       leastConnectedServer.requests++;
-
-      if (error.response) {
-        leastConnectedServer.logs.push(`${new Date()} - ${error.response.status} - ${error.message}`);
-      } else {
-        leastConnectedServer.logs.push(`${new Date()} - Error: ${error.message}`);
-      }
-      leastConnectedServer.tried = true;
 
       // Move to the next server for retry
       currentServerIndex = (currentServerIndex + 1) % connections.length;
@@ -90,7 +79,6 @@ app.post("/request", upload.single('image'), async (req, res) => {
   }
 
   connections.forEach(conn => conn.tried = false);
-
 });
 
 
