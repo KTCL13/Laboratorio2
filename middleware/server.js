@@ -23,25 +23,24 @@ app.post("/middleware", (req, res) => {
   console.log("Instancias actualizadas: ", connections);
 });
 
+let currentServerIndex = 0;
+
 app.post("/request", upload.single('image'), async (req, res) => {
 
   if (!req.file) {
     return res.status(400).send('No se ha subido ningún archivo.');
-}
-
+  }
 
   if (connections.length === 0) {
     return res.status(503).json({ error: "No hay servidores disponibles" });
   }
 
+  let initialServerIndex = currentServerIndex;
+  
+  while (true) {
+    let leastConnectedServer = connections[currentServerIndex];
 
-  let leastConnectedServer = connections.reduce((prev, curr) => 
-    prev.requests < curr.requests ? prev : curr
-  );
-
-  for (let i = 0; i < connections.length; i++) {
     try {
-
       const formData = new FormData();
       formData.append('image', req.file.buffer, {
           filename: req.file.originalname,
@@ -50,22 +49,27 @@ app.post("/request", upload.single('image'), async (req, res) => {
       });
 
       console.log(`Llamando a servidor: ${leastConnectedServer.instance}/upload`);
-      const response = await axios.post(`http://${leastConnectedServer.instance}/upload`, formData,{
-         headers: {
-          ...formData.getHeaders()   
-         },
-       responseType: "arraybuffer"
+      const response = await axios.post(`http://${leastConnectedServer.instance}/upload`, formData, {
+        headers: {
+          ...formData.getHeaders()
+        },
+        responseType: "arraybuffer"
       });
+      
       leastConnectedServer.requests++;
-      leastConnectedServer.logs.push(`${new Date()} - ${req.originalUrl} -  ${req.method}. ${JSON.stringify(response.data)}`)
+      leastConnectedServer.logs.push(`${new Date()} - ${req.originalUrl} - ${req.method}. ${JSON.stringify(response.data)}`);
+      
+      // Round Robin: move to next server for the next request
+      currentServerIndex = (currentServerIndex + 1) % connections.length;
 
-      res.set('Content-Type', response.headers['content-type']); 
+      res.set('Content-Type', response.headers['content-type']);
       res.send(response.data);
+      break;
 
     } catch (error) {
-
       console.log(`Error. ${leastConnectedServer.instance}: ${error.message}. ${new Date()}`);
       leastConnectedServer.requests++;
+
       if (error.response) {
         leastConnectedServer.logs.push(`${new Date()} - ${error.response.status} - ${error.message}`);
       } else {
@@ -73,17 +77,14 @@ app.post("/request", upload.single('image'), async (req, res) => {
       }
       leastConnectedServer.tried = true;
 
+      // Move to the next server for retry
+      currentServerIndex = (currentServerIndex + 1) % connections.length;
+
       const availableConnections = connections.filter(conn => !conn.tried);
-      
-      if (availableConnections.length > 0) {
-        leastConnectedServer = availableConnections.reduce((prev, curr) => 
-          prev.requests < curr.requests ? prev : curr
-        );
-        console.log(leastConnectedServer)
-      } else {
+
+      if (availableConnections.length === 0 || currentServerIndex === initialServerIndex) {
         connections.forEach(conn => conn.tried = false);
         return res.status(503).json({ error: "No hay servidores disponibles" });
-
       }
     }
   }

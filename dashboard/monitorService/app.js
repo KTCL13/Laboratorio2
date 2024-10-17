@@ -1,25 +1,152 @@
 const express = require('express');
 const axios = require('axios');
-const http = require('http');
+const http = require("http");
+const cors = require("cors");
 const { Server } = require('socket.io');
-const cors = require('cors')
 const { Client } = require('ssh2');
 const crypto = require('crypto');
+const { strictEqual } = require('assert');
 
 const app = express();
-const port = 7000;
+const server = http.createServer(app);  // Crear el servidor HTTP
+const io = new Server(server, {
+    cors: {
+        origin: "http://192.168.137.50:8080/",  // Asegurar que el frontend está permitido
+        methods: ["GET", "POST"],
+    },
+});
 
-app.use(express.json());
 app.use(cors());
-const server = http.createServer(app); 
-const io = new Server(server); 
+app.use(express.json());
 
-
-
+const port = 7000;
+const MAX_HISTORY = 10;
 let connections = [];
 
+
+// Rutas para los logs y los monitores
+app.get("/status", (req, res) => {
+    console.log("/status: Obteniendo Logs");
+    res.json({ servers: connections });
+});
+
+app.post("/monitor", (req, res) => {
+    console.log("Obteniendo y seteando instancias.");
+    
+    const instance = req.body;
+
+    if (!instance || !instance.ipAddress || !instance.port) {
+        console.log("Algo fallo en la ip y el port");
+        return res.status(400).json({ error: "Se requiere ipAddress y port" });
+    }
+
+    const serverAddress = `${instance.ipAddress}:${instance.port}`;
+    const idContainer= instance.id
+    console.log("Servidor recibido: " + serverAddress);
+
+    const existingServer = connections.find(conn => conn.instance === serverAddress);
+    if (existingServer) {
+        return res.status(409).json({ error: "El servidor ya está registrado" });
+    }
+
+    connections.push({
+        instance: serverAddress,
+        requests: 0,
+        history: [],
+        tried: false,
+        status: 'up',
+        id: idContainer
+    });
+
+    res.status(200).end();
+    console.log("Instancias actualizadas: ", connections);
+});
+
+// Intervalo para verificar los servidores
+setInterval(async () => {
+    const timeout = (server) =>
+        new Promise((_, reject) =>
+            setTimeout(() => reject(new Error(`La petición a ${server.instance} tardó más de 15 segundos`)), 15000)
+        );
+
+    const promises = connections.map(async (server) => {
+        console.log(`Verificando ${server.instance}`);
+        const startTime = Date.now();
+        try {
+            const respuesta = await Promise.race([
+                axios.get(`http://${server.instance}/healthCheck`),
+                timeout(server)
+            ]);
+
+            const responseTime = Date.now() - startTime;
+            server.responseTime = responseTime;
+
+            if (respuesta.status === 200) {
+                server.status = 'up';
+                server.message = `Tardo ${responseTime}`;
+                console.log('Respuesta:', respuesta.data);
+            } else {
+                if(server.status == 'down'){
+                server.message = `Error: ${respuesta.data}`;
+                console.log('Llega pero falla:', respuesta.data);
+                }else{
+                    server.status = 'down';
+                    server.message = `Error: ${respuesta.data}`;
+                    console.log('Llega pero falla:', respuesta.data);    
+                    runContainer((err, result) => {
+                        if (err) {
+                            console.log(`Error: ${err.message}`);
+                        }
+                        console.log(`Container created: ${result}`);
+                    });
+                }
+            }
+        } catch (error) {
+            if(server.status == 'down'){
+                const isTimeout = error.message.includes('tardó más de 15 segundos');
+                server.message = `${isTimeout ? 'Timeout' : error.message}`;
+                console.log(`Fallo en ${server.instance}: ${isTimeout ? 'Timeout' : error.message}`);
+
+            }else{
+                const isTimeout = error.message.includes('tardó más de 15 segundos');
+                server.status = 'down';
+                server.message = `${isTimeout ? 'Timeout' : error.message}`;
+                console.log(`Fallo en ${server.instance}: ${isTimeout ? 'Timeout' : error.message}`);
+                runContainer((err, result) => {
+                    if (err) {
+                        console.log(`Error: ${err.message}`);
+                    }
+                    console.log(`Container created: ${result}`);
+                });
+            }
+        }
+
+        server.history.push({
+            timestamp: new Date().toISOString(),
+            status: server.status,
+            message: server.message,
+        });
+
+        if (server.history.length > MAX_HISTORY) {
+            server.history.shift(); 
+        }
+    });
+
+    await Promise.all(promises);
+    console.log("Va a emitir");
+
+    io.emit("update", { servers: connections });
+    console.log("Emitió");
+}, 15000);
+
+io.on("connection", (_) => {
+    console.log("Un usuario se conectó");
+});
+
+
+
 const sshConfig = {
-    host: '192.168.77.170',  
+    host: '192.168.137.50',  
     port: 22,           
     username: 'cristiancelis',  
     password: 'jcelis',   
@@ -32,7 +159,7 @@ let portsData = { hostPort: 3000, containerPort: 3000 };
         if (err) {
             return res.status(500).send(`Error: ${err.message}`);
         }
-        res.status(200).send(`Container created: ${result}`);
+        return res.status(200).send(`Container created: ${result}`);
     });
 });
 
@@ -60,14 +187,14 @@ function stopContainerById(containerId, callback) {
 }
 
 function runContainer(callback){
-  const directory = '/home/cristiancelis/Documents/distribuidos/testServicio';
+  const directory = '/home/cristiancelis/Documents/distribuidos/Laboratorio2/testServicio';
   portsData.hostPort += 1;
   portsData.containerPort += 1;
   const hostPort=portsData.hostPort;
   const containerPort= portsData.containerPort;
-  const discoveryServer="192.168.1.17:9000"
-  const ipAddress="192.168.1.18"
-  const uniqueContainerName = `my-node-app-${crypto.randomBytes(4).toString('hex')}`;
+  const discoveryServer="192.168.137.203:9000"
+  const ipAddress="192.168.137.50"
+  const uniqueContainerName = `my-node-app-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
 
   const command = `
     cd ${directory} && \
@@ -129,82 +256,8 @@ function executeSSHCommand(command, callback) {
   }).connect(sshConfig);
 }
 
-// Guardar instancias de los servidores
-app.post("/monitor", (req, res) => {
-    const instance = req.body;
 
-    if (!instance || !instance.ipAddress || !instance.port) {
-        return res.status(400).json({ error: "Se requiere ipAddress y port" });
-    }
-
-    const serverAddress = `${instance.ipAddress}:${instance.port}`;
-
-    const existingServer = connections.find(conn => conn.instance === serverAddress);
-    if (existingServer) {
-        return res.status(409).json({ error: "El servidor ya está registrado" });
-    }
-
-    connections.push({
-        instance: serverAddress,
-        requests: 0,
-        id: instance.id,
-        logs: [],
-        history: [],
-        tried: false,
-        status: 'up'
-    });
-
-    res.status(200).end();
-    console.log("Instancias actualizadas: ", connections);
-});
-
-setInterval(async () => {
-    const timeout = (server) => 
-        new Promise((_, reject) => 
-            setTimeout(() => reject(new Error(`La petición a ${server.instance} tardó más de 15 segundos`)), 15000)
-        );
-
-    const promises = connections.map(async (server) => {
-        console.log(`Verificando ${server.instance}`);
-        const startTime = Date.now(); 
-        try {
-            const respuesta = await Promise.race([
-                axios.get(`http://${server.instance}/healthCheck`),
-                timeout(server)
-            ]);
-
-            const responseTime = Date.now() - startTime;
-            server.responseTime = responseTime;
-
-            if (respuesta.status === 200) {
-                server.status = 'up';
-                console.log('Respuesta:', respuesta.data);
-            } else {
-                server.status = 'down';
-                server.history.push({
-                    timestamp: new Date().toISOString(),
-                    status: 'down',
-                    error: `Código de estado: ${respuesta.status}`
-                });
-                stopContainerById(this.server.id)
-            }
-        } catch (error) {
-            server.status = 'down';
-            server.history.push({
-                timestamp: new Date().toISOString(),
-                status: 'down',
-                error: error.message
-            });
-            console.log(`Fallo en ${server.instance}: ${error.message}`);
-            stopContainerById(this.server.id)
-        }
-    });
-
-    await Promise.all(promises);
-    io.emit('update', { servers: connections });
-}, 60000);
-
-
-app.listen(port, () => {
+// Cambiar de app.listen a server.listen para que Socket.IO funcione
+server.listen(port, () => {
     console.log(`Monitor corriendo en el puerto: ${port}`);
 });
