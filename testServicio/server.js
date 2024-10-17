@@ -1,7 +1,6 @@
 const express = require('express');
 const multer = require('multer');
 const Jimp = require('jimp');
-const path = require('path');
 const cors = require('cors'); // <-- Importa CORS
 const app = express();
 
