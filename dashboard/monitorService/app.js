@@ -186,6 +186,7 @@ setInterval(async () => {
                     status: 'down',
                     error: `Código de estado: ${respuesta.status}`
                 });
+                stopContainerById(this.server.id)
             }
         } catch (error) {
             server.status = 'down';
@@ -195,6 +196,7 @@ setInterval(async () => {
                 error: error.message
             });
             console.log(`Fallo en ${server.instance}: ${error.message}`);
+            stopContainerById(this.server.id)
         }
     });
 

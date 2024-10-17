@@ -1,69 +1,77 @@
 const express = require('express');
-const fileUpload = require('express-fileupload');
+const multer = require('multer');
 const Jimp = require('jimp');
 const path = require('path');
-const fs = require('fs');
+const cors = require('cors'); // <-- Importa CORS
 const app = express();
 
 const containerPort = process.env.CONTAINER_PORT;
 const hostPort = process.env.HOST_PORT;
-const ipAddress = process.env.IP_ADDRESS;
-const containerName = process.env.CONTAINER_NAME
+const ipAddress = process.env.IP_ADDRESS; 
+const containerName = process.env.CONTAINER_NAME;
 
 
-// Middleware para manejar la subida de archivos
-app.use(fileUpload());
-app.use(express.static('frontend'));
+const storage = multer.memoryStorage();
+const upload = multer({ storage: storage });
+// Habilitar CORS para todas las rutas
+app.use(cors());
 
+// Servir archivos estáticos desde la carpeta 'output'
 
 app.get("/healthCheck", (req, res) => {
   res.status(200).end();
 });
 
-
-// Ruta para agregar la marca de agua
-app.post('/upload', async (req, res) => {
-  if (!req.files || !req.files.image) {
+app.post('/upload', upload.single('image'), async (req, res) => {
+  console.log(req.file)
+  if (!req.file) {
+    console.log("No se subió ninguna imagen");
     return res.status(400).send('No se subió ninguna imagen.');
   }
 
-  const image = req.files.image;
+  const image = req.file.buffer;
   const watermarkText = 'Marca de agua';
 
   try {
-    const img = await Jimp.read(image.data);
-    const font = await Jimp.loadFont(Jimp.FONT_SANS_32_BLACK);
+    console.log("Leyendo la imagen con Jimp");
+    const img = await Jimp.read(image);
+    console.log("Cargando la fuente");
+    const font = await Jimp.loadFont(Jimp.FONT_SANS_64_BLACK);
 
+    console.log("Añadiendo la marca de agua");
     img.print(font, 10, 10, watermarkText);  // Añadir la marca de agua
-    const outputPath = path.join(__dirname, 'output', 'watermarked.jpg');
+    
+    const editedImageBuffer = await img.getBufferAsync(Jimp.MIME_JPEG);
+    res.set('Content-Type', Jimp.MIME_JPEG);
+    res.send(editedImageBuffer);  // Enviar la imagen procesada
 
-    await img.writeAsync(outputPath);  // Guardar la imagen con la marca de agua
-    res.sendFile(outputPath);  // Enviar la imagen modificada al frontend
-  } catch (err) {
-    res.status(500).send('Error al procesar la imagen.');
+  } catch (error) {
+      console.error("Error al procesar la imagen:", error);
+      res.status(500).json({ message: 'Error al procesar la imagen', error: error.message });
   }
 });
 
 const startServer = async () => {
   try {
-      console.log('IP del host:', ipAddress);
-      console.log('ID del contenedor :', containerName)
-      console.log('HostPort :', hostPort)
-      console.log("ipDIS:"+process.env.DIS_SERVERIP_PORT)
-      console.log(`Servidor corriendo en el puerto: ${containerPort}`);
-      const requestOptions = {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ipAddress: ipAddress, port: hostPort , id: containerName}),
-      };
-      await fetch(`http://${process.env.DIS_SERVERIP_PORT}/discoveryServer`, requestOptions).then((response) => {
-          console.log(response.status);
+    console.log('IP del host:', ipAddress);
+    console.log('ID del contenedor:', containerName);
+    console.log('HostPort:', hostPort);
+    console.log("ipDIS:", process.env.DIS_SERVERIP_PORT);
+    console.log(`Servidor corriendo en el puerto: ${containerPort}`);
+
+    const requestOptions = {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ipAddress: ipAddress, port: hostPort , id: containerName }),
+    };
+
+    await fetch(`http://${process.env.DIS_SERVERIP_PORT}/discoveryserver`, requestOptions)
+      .then((response) => {
+        console.log(response.status);
       });
   } catch (error) {
-      console.error('Error al obtener la IP:', error);
+    console.error('Error al obtener la IP:', error);
   }
 };
 
 app.listen(containerPort, startServer);
-
-//docker run --rm --name chanchito -e CONTAINER_NAME=chanchito  -e HOST_PORT=3000 -e CONTAINER_PORT=3000  -e DIS_SERVERIP_PORT="192.168.1.17:9000" -p 3000:3000 testnapp

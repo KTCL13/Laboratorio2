@@ -7,7 +7,8 @@ const port = 4000;
 
 app.use(express.json());
 app.use(cors());
-const upload = multer();
+const storage = multer.memoryStorage();
+const upload = multer( {storage:storage} );
 
 
 let connections = [];
@@ -23,6 +24,11 @@ app.post("/middleware", (req, res) => {
 
 app.post("/request", upload.single('image'), async (req, res) => {
 
+  if (!req.file) {
+    return res.status(400).send('No se ha subido ningún archivo.');
+}
+
+
   if (connections.length === 0) {
     return res.status(503).json({ error: "No hay servidores disponibles" });
   }
@@ -36,18 +42,24 @@ app.post("/request", upload.single('image'), async (req, res) => {
     try {
 
       const formData = new FormData();
-      formData.append('image', req.file.buffer, req.file.originalname);
+      formData.append('image', req.file.buffer, {
+          filename: req.file.originalname,
+          contentType: req.file.mimetype,
+          knownLength: req.file.size
+      });
 
       console.log(`Llamando a servidor: ${leastConnectedServer.instance}/upload`);
       const response = await axios.post(`http://${leastConnectedServer.instance}/upload`, formData,{
          headers: {
-          ...formData.getHeaders(),
-         }
+          ...formData.getHeaders()   
+         },
+       responseType: "arraybuffer"
       });
       leastConnectedServer.requests++;
       leastConnectedServer.logs.push(`${new Date()} - ${req.originalUrl} -  ${req.method}. ${JSON.stringify(response.data)}`)
 
-      res.status(response.status).send(response.data);
+      res.set('Content-Type', response.headers['content-type']); 
+      res.send(response.data);
 
     } catch (error) {
 
